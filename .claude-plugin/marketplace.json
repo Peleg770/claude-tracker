@@ -1,0 +1,5 @@
+{
+  "name": "claude-tracker",
+  "owner": { "name": "Peleg770" },
+  "plugins": [{ "name": "tracker", "source": "./" }]
+}
