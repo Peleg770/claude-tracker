@@ -4,7 +4,10 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { TrackerDone, TrackerFilter, TrackerItem, TrackerSource, TrackerTone } from '../types'
 import {
   ago,
+  detectSources,
   iconFor,
+  jiraIssues,
+  jiraRank,
   label,
   lastPrompts,
   matches,
@@ -23,8 +26,6 @@ import {
 } from './parse'
 
 const PANE = 'tracker'
-const SLACK = 'claude.ai Slack'
-const LINEAR = 'linear'
 const REMOTE_EVERY_MS = 5 * 60 * 1000
 const SESSIONS_EVERY_MS = 20 * 1000
 const SLACK_DAYS = 7
@@ -40,10 +41,12 @@ const SECTIONS: { source: TrackerSource; title: string }[] = [
   { source: 'slack', title: 'Slack' },
   { source: 'pr', title: 'Pull requests' },
   { source: 'linear', title: 'Linear' },
+  { source: 'jira', title: 'Jira' },
   { source: 'session', title: 'Claude sessions' },
 ]
 
 const items = atom({ plugin: 'tracker', key: 'items' } as const, {})
+const connected = atom({ plugin: 'tracker', key: 'connected' } as const, {})
 const errors = atom({ plugin: 'tracker', key: 'errors' } as const, {})
 const dismissed = atom({ plugin: 'tracker', key: 'dismissed' } as const, {})
 const refreshedAt = atom({ plugin: 'tracker', key: 'refreshedAt' } as const, 0)
@@ -74,7 +77,7 @@ async function settle($: $, source: TrackerSource, load: () => Promise<TrackerIt
 
 const PRIORITY_TONE: Record<number, TrackerTone> = { 1: 'error', 2: 'warning' }
 
-async function loadLinear($: $): Promise<TrackerItem[]> {
+async function loadLinear($: $, server: string): Promise<TrackerItem[]> {
   type Issue = {
     id: string
     title: string
@@ -85,7 +88,7 @@ async function loadLinear($: $): Promise<TrackerItem[]> {
   }
   // Linear filters by state server side: one 100-issue list of everything timed out, two small active lists don't.
   const byState = async (state: string) => {
-    const result = await $.mcp.call(LINEAR, 'list_issues', {
+    const result = await $.mcp.call(server, 'list_issues', {
       assignee: 'me',
       state,
       limit: 50,
@@ -115,6 +118,61 @@ async function loadLinear($: $): Promise<TrackerItem[]> {
         when: Date.parse(issue.updatedAt),
       }
     })
+}
+
+const JIRA_TONE: Record<number, TrackerTone> = { 1: 'error', 2: 'warning' }
+
+async function loadJira($: $, server: string): Promise<TrackerItem[]> {
+  const resources = await $.mcp.call(server, 'getAccessibleAtlassianResources', {})
+  if (resources.isError) throw new Error('Atlassian did not answer')
+  const sites = (mcpJson(resources.content) as { id: string; url: string; scopes?: string[] }[]).filter(
+    site => site.scopes === undefined || site.scopes.some(scope => scope.includes('jira')),
+  )
+
+  const perSite = await Promise.all(
+    sites.map(async site => {
+      const result = await $.mcp.call(server, 'searchJiraIssuesUsingJql', {
+        cloudId: site.id,
+        jql: 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC',
+        fields: ['summary', 'status', 'priority', 'updated'],
+        maxResults: 50,
+      })
+      if (result.isError) throw new Error('Jira search did not answer')
+
+      return jiraIssues(mcpJson(result.content)).map(issue => {
+        const priority = issue.fields?.priority?.name
+        const rank = jiraRank(priority)
+        const updated = Date.parse(issue.fields?.updated ?? '') || 0
+        const summary = issue.fields?.summary ?? ''
+
+        return {
+          id: `jira:${site.id}:${issue.key}`,
+          source: 'jira' as const,
+          title: `${issue.key} ${summary}`,
+          status: issue.fields?.status?.name ?? 'open',
+          tone: JIRA_TONE[rank] ?? 'subtle',
+          detail: priority ? `${priority} priority` : '',
+          url: `${site.url.replace(/\/$/, '')}/browse/${issue.key}`,
+          prompt: `Work on the Jira issue ${issue.key}: ${summary}`,
+          stamp: issue.fields?.updated ?? '',
+          // Highest first, then by last update, as Linear sorts.
+          at: updated - (rank - 1) * 1e12,
+          when: updated,
+        }
+      })
+    }),
+  )
+
+  return perSite.flat()
+}
+
+/** Whether `gh` is installed and signed in; PRs come from it, not from an MCP server. */
+async function hasGh($: $): Promise<boolean> {
+  try {
+    return (await $.process.run(['gh', 'auth', 'status'])).exitCode === 0
+  } catch {
+    return false
+  }
 }
 
 async function loadPrs($: $): Promise<TrackerItem[]> {
@@ -171,8 +229,8 @@ async function loadPrs($: $): Promise<TrackerItem[]> {
   return [...reviews, ...own]
 }
 
-async function slackSearch($: $, me: string, args: Record<string, unknown>): Promise<SlackHit[]> {
-  const result = await $.mcp.call(SLACK, 'slack_search_public_and_private', {
+async function slackSearch($: $, server: string, me: string, args: Record<string, unknown>): Promise<SlackHit[]> {
+  const result = await $.mcp.call(server, 'slack_search_public_and_private', {
     sort: 'timestamp',
     limit: 20,
     include_context: false,
@@ -193,16 +251,16 @@ async function slackUserId($: $): Promise<string> {
   return id
 }
 
-async function loadSlack($: $): Promise<TrackerItem[]> {
+async function loadSlack($: $, server: string): Promise<TrackerItem[]> {
   const me = await slackUserId($)
   const watched = await read($, channels)
   const since = new Date(Date.now() - SLACK_DAYS * 864e5).toISOString().slice(0, 10)
   // A repeated `in:` is an OR, so one search covers every watched channel.
   const inWatched = Object.keys(watched).map(id => `in:<#${id}>`).join(' ')
   const [dms, mentions, myThreadReplies] = await Promise.all([
-    slackSearch($, me, { filters: `is:dm after:${since}`, channel_types: 'im,mpim' }),
-    inWatched ? slackSearch($, me, { keywords: [`<@${me}>`], filters: `${inWatched} after:${since}` }) : [],
-    inWatched ? slackSearch($, me, { filters: `from:<@${me}> is:thread ${inWatched} after:${since}` }) : [],
+    slackSearch($, server, me, { filters: `is:dm after:${since}`, channel_types: 'im,mpim' }),
+    inWatched ? slackSearch($, server, me, { keywords: [`<@${me}>`], filters: `${inWatched} after:${since}` }) : [],
+    inWatched ? slackSearch($, server, me, { filters: `from:<@${me}> is:thread ${inWatched} after:${since}` }) : [],
   ])
   const found: TrackerItem[] = []
   const workspace = [...dms, ...mentions, ...myThreadReplies]
@@ -252,7 +310,7 @@ async function loadSlack($: $): Promise<TrackerItem[]> {
   for (let i = 0; i < checked.length; i += 4) {
     const batch = await Promise.all(
       checked.slice(i, i + 4).map(async ([key, thread]) => {
-        const result = await $.mcp.call(SLACK, 'slack_read_thread', {
+        const result = await $.mcp.call(server, 'slack_read_thread', {
           channel_id: thread.channel,
           message_ts: thread.threadTs,
         })
@@ -289,9 +347,10 @@ async function loadSlack($: $): Promise<TrackerItem[]> {
 /** Looks a channel up by name and adds it to the watched set; a miss says so. */
 async function watchChannel($: $, typed: string) {
   const name = typed.trim().replace(/^#/, '').toLowerCase()
-  if (name === '') return
+  const server = (await read($, connected)).slack
+  if (name === '' || server === undefined) return
   try {
-    const result = await $.mcp.call(SLACK, 'slack_search_channels', {
+    const result = await $.mcp.call(server, 'slack_search_channels', {
       keywords: [name],
       natural_language_query: name,
       channel_types: 'public_channel,private_channel',
@@ -306,7 +365,7 @@ async function watchChannel($: $, typed: string) {
     const next = await update($, channels, all => ({ ...all, [id]: `#${name}` }))
     await $.store.set('channels', next)
     await update($, channelNote, () => '')
-    void settle($, 'slack', () => loadSlack($)).then(() => showCount($))
+    void settle($, 'slack', () => loadSlack($, server)).then(() => showCount($))
   } catch (error) {
     await update($, channelNote, () => (error instanceof Error ? error.message : String(error)))
   }
@@ -318,7 +377,8 @@ async function unwatchChannel($: $, id: string) {
     return rest
   })
   await $.store.set('channels', next)
-  void settle($, 'slack', () => loadSlack($)).then(() => showCount($))
+  const server = (await read($, connected)).slack
+  if (server !== undefined) void settle($, 'slack', () => loadSlack($, server)).then(() => showCount($))
 }
 
 async function loadSessions($: $): Promise<TrackerItem[]> {
@@ -380,10 +440,24 @@ async function refreshRemote($: $) {
   if (await read($, isBusy)) return
   await update($, isBusy, () => true)
   try {
+    // Only what is connected now is asked; a source that went away drops its rows and error.
+    const found: Record<string, string> = { ...detectSources(await $.tool.list()) }
+    if (await hasGh($)) found.pr = 'gh'
+    await update($, connected, () => found)
+    const gone = SECTIONS.map(s => s.source).filter(source => source !== 'session' && !(source in found))
+    await update($, items, all => ({ ...all, ...Object.fromEntries(gone.map(source => [source, []])) }))
+    await update($, errors, all => ({ ...all, ...Object.fromEntries(gone.map(source => [source, ''])) }))
+
+    const LOADERS: Partial<Record<TrackerSource, (server: string) => Promise<TrackerItem[]>>> = {
+      slack: server => loadSlack($, server),
+      pr: () => loadPrs($),
+      linear: server => loadLinear($, server),
+      jira: server => loadJira($, server),
+    }
     await Promise.all([
-      settle($, 'slack', () => loadSlack($)),
-      settle($, 'pr', () => loadPrs($)),
-      settle($, 'linear', () => loadLinear($)),
+      ...Object.entries(found).map(([source, server]) =>
+        settle($, source as TrackerSource, () => LOADERS[source as TrackerSource]!(server)),
+      ),
       settle($, 'session', () => loadSessions($)),
     ])
     await update($, refreshedAt, () => Date.now())
@@ -449,6 +523,7 @@ const TABS: { filter: TrackerFilter; title: string }[] = [
   { filter: 'slack', title: 'Slack' },
   { filter: 'pr', title: 'PRs' },
   { filter: 'linear', title: 'Linear' },
+  { filter: 'jira', title: 'Jira' },
   { filter: 'session', title: 'Sessions' },
   { filter: 'done', title: 'Done' },
 ]
@@ -457,7 +532,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tracker',
-      description: 'Show what is waiting on you: Slack, PRs, Linear, Claude sessions',
+      description: 'Show what is waiting on you in the tools you have connected, and your Claude sessions',
       argumentHint: '[refresh]',
     })
     const stored = (await $.store.get('dismissed')) as Record<string, string> | undefined
@@ -491,6 +566,8 @@ export const register: Register = on => {
     const Input = 'Input' in ui ? ui.Input : undefined
     const all = await read($, items)
     const failed = await read($, errors)
+    const live = await read($, connected)
+    const hasSlack = live.slack !== undefined
     const hidden = await read($, dismissed)
     const busy = await read($, isBusy)
     const at = await read($, refreshedAt)
@@ -521,27 +598,31 @@ export const register: Register = on => {
       slack: 0,
       pr: 0,
       linear: 0,
+      jira: 0,
       session: 0,
     }
     for (const item of pool) counts[item.source] += 1
 
-    type Group = { key: string; title: string; tone?: TrackerTone; rows: TrackerItem[]; error?: string }
+    // A section shows only when it has rows: no empty states. Slack's stays while its channels are edited.
+    type Group = { key: string; title: string; tone?: TrackerTone; rows: TrackerItem[] }
     const groups: Group[] = []
     const urgentRows = pool.filter(isUrgent).sort((a, b) => b.at - a.at)
-    if (tab === 'all' || tab === 'urgent') {
-      if (urgentRows.length > 0 || tab === 'urgent') groups.push({ key: 'urgent', title: 'Urgent', tone: 'error', rows: urgentRows })
+    if ((tab === 'all' || tab === 'urgent') && urgentRows.length > 0) {
+      groups.push({ key: 'urgent', title: 'Urgent', tone: 'error', rows: urgentRows })
     }
-    if (tab === 'done') groups.push({ key: 'done', title: 'Done in the last 48 hours', tone: 'success', rows: doneEntries.map(d => d.item) })
+    if (tab === 'done' && doneEntries.length > 0) {
+      groups.push({ key: 'done', title: 'Done in the last 48 hours', tone: 'success', rows: doneEntries.map(d => d.item) })
+    }
     for (const s of SECTIONS) {
       if (tab !== 'all' && tab !== s.source) continue
       const rows = pool.filter(item => item.source === s.source && (tab !== 'all' || !isUrgent(item)))
       rows.sort((a, b) => Number(isUrgent(b)) - Number(isUrgent(a)))
-      if (rows.length > 0 || failed[s.source] || (s.source === 'slack' && (tab === 'slack' || editing)))
-        groups.push({ key: s.source, title: s.title, rows, error: failed[s.source] })
+      if (rows.length > 0 || (s.source === 'slack' && hasSlack && editing)) groups.push({ key: s.source, title: s.title, rows })
     }
     // An empty tab is noise; All and the tab in use stay so the person never loses their place.
     const tabs = TABS.filter(t => t.filter === 'all' || t.filter === tab || counts[t.filter] > 0)
-    const quiet = SECTIONS.filter(s => counts[s.source] === 0 && !failed[s.source])
+    // A connected source that failed is named once, quietly, at the foot; nothing else is said about it.
+    const unreachable = SECTIONS.filter(s => s.source in live && failed[s.source]).map(s => s.title)
 
     const row = (item: TrackerItem, index: number) => {
       // A row in the Done tab is the snapshot "done" took; it offers restore instead of the triage buttons.
@@ -719,13 +800,6 @@ export const register: Register = on => {
           <Text dimColor>{`🔍 Nothing matches "${search}".`}</Text>
         ) : null}
 
-        {!loading && !search && pool.length === 0 && groups.every(g => !g.error) ? (
-          <Box flexDirection="column">
-            <Text color="success" bold>🎉 All clear</Text>
-            <Text dimColor>Nothing is waiting on you.</Text>
-          </Box>
-        ) : null}
-
         {groups.map(group => {
           const isOpen = open[group.key] === true || tab !== 'all'
           const list = isOpen ? group.rows : group.rows.slice(0, SHOWN_PER_SECTION)
@@ -737,16 +811,7 @@ export const register: Register = on => {
                 <Text bold color={group.tone}>{`${TAB_ICONS[group.key as TrackerFilter]} ${group.title}`}</Text>
                 {group.rows.length > 0 ? <Text color="claude">{` ${group.rows.length}`}</Text> : ''}
               </Text>
-              {group.error ? (
-                <Text color="warning" wrap="truncate-end">{`Couldn't load: ${group.error}`}</Text>
-              ) : null}
               {group.key === 'slack' ? channelBar() : null}
-              {group.key === 'done' && group.rows.length === 0 ? (
-                <Text dimColor>Nothing marked done in the last 48 hours.</Text>
-              ) : null}
-              {group.key === 'urgent' && group.rows.length === 0 ? (
-                <Text dimColor>Nothing marked urgent. Press "urgent" on a row to pin it here.</Text>
-              ) : null}
               <Box flexDirection="column">
                 {twoColumns
                   ? pairs(list).map(([left, right], index) => (
@@ -774,17 +839,17 @@ export const register: Register = on => {
           )
         })}
 
-        {!loading && tab === 'all' && !search && quiet.length > 0 && quiet.length < SECTIONS.length ? (
-          <Text dimColor wrap="truncate-end">{`Nothing waiting in ${quiet.map(s => s.title).join(', ')}`}</Text>
-        ) : null}
-
         <Box flexDirection="row" gap={1}>
           <Box flexGrow={1} flexShrink={1}>
-            <Text dimColor wrap="truncate-end">r refresh</Text>
+            <Text dimColor wrap="truncate-end">
+              {unreachable.length > 0 ? `r refresh · couldn't reach ${unreachable.join(', ')}` : 'r refresh'}
+            </Text>
           </Box>
-          <Button key="channels-footer" plain dimColor onPress={() => void update($, editingChannels, open => !open)}>
-            {editing ? 'close channels' : 'Slack channels'}
-          </Button>
+          {hasSlack ? (
+            <Button key="channels-footer" plain dimColor onPress={() => void update($, editingChannels, open => !open)}>
+              {editing ? 'close channels' : 'Slack channels'}
+            </Button>
+          ) : null}
         </Box>
       </Box>
     )

@@ -2,7 +2,10 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   cleanSlack,
+  detectSources,
   iconFor,
+  jiraIssues,
+  jiraRank,
   label,
   lastPrompts,
   matches,
@@ -198,3 +201,32 @@ test('the done log keeps 48 hours and drops the rest', async () => {
   expect(Object.keys(pruneDone(log, now))).toEqual(['fresh'])
 })
 
+
+test('detectSources finds each source by its tool, whatever the server is called', () => {
+  const found = detectSources([
+    { name: 'Read', mcp: false },
+    { name: 'mcp__claude_ai_Slack__slack_search_public_and_private', mcp: true },
+    { name: 'mcp__github__list_issues', mcp: true },
+    { name: 'mcp__linear-server__list_issues', mcp: true },
+    { name: 'mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql', mcp: true },
+  ])
+  expect(found).toEqual({ slack: 'claude_ai_Slack', linear: 'linear-server', jira: 'claude_ai_Atlassian' })
+})
+
+test('detectSources leaves out what is not connected', () => {
+  expect(detectSources([{ name: 'mcp__github__list_issues', mcp: true }])).toEqual({})
+})
+
+test('jiraIssues reads both answer shapes and skips rows without a key', () => {
+  const issue = { key: 'DES-12', fields: { summary: 'Pane spacing', priority: { name: 'High' } } }
+  expect(jiraIssues({ issues: [issue, { id: 1 }] })).toEqual([issue])
+  expect(jiraIssues({ issues: { nodes: [issue] } })).toEqual([issue])
+  expect(jiraIssues('nope')).toEqual([])
+})
+
+test('jiraRank orders priority names, unknown as Medium', () => {
+  expect(jiraRank('Highest')).toBe(1)
+  expect(jiraRank('high')).toBe(2)
+  expect(jiraRank('P3-ish')).toBe(3)
+  expect(jiraRank(undefined)).toBe(3)
+})

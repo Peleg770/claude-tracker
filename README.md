@@ -21,6 +21,7 @@ Answer `y` to add the marketplace, pick the user scope, and type `/tracker`.
 | 💬 **Slack** | DMs where the last message is someone else's, mentions of you in the channels you watch, and threads you posted in where someone replied after you. Bots are skipped. |
 | 🔀 **Pull requests** | Your open PRs and where they stand (checks failing, changes requested, draft, checks running, approved and ready to merge, waiting for review), plus PRs where your review is requested. |
 | 📋 **Linear** | Issues assigned to you that are started or not yet started, urgent and high priority first. |
+| 🎫 **Jira** | Issues assigned to you that are not done, across every Atlassian site you can reach, highest priority first. |
 | 🤖 **Claude sessions** | Your other Claude Code sessions that went idle and are waiting for you, with their last prompt. |
 
 Every row has four actions:
@@ -38,13 +39,18 @@ Slack, PRs and Linear refresh every 5 minutes, sessions every 20 seconds. On a w
 
 Everything is about whoever runs it: your Slack user, `gh` as you, Linear issues assigned to you, your own `~/.claude` folder. Nothing is sent anywhere except the services you already connected.
 
-1. **Slack**: the Slack connector connected on claude.ai (Settings, Connectors). In Claude Code it shows in `/mcp` as `claude.ai Slack`.
-2. **Linear**: the Linear MCP server, named `linear` in `/mcp`.
-3. **GitHub**: the GitHub CLI signed in (`gh auth status`). Your own PRs come from the repo of the folder you start Claude Code in; review requests are searched across GitHub.
+Nothing to configure. On every refresh the tracker looks at the MCP tools you have connected and reads only the sources it finds; the rest never appear, not even as an empty section. Connect one later and it shows up on the next refresh.
 
-A source you have not connected shows its error in its own section and the rest keep working. Watched Slack channels start empty: add yours from the pane. DMs always count.
+| Source | Found when |
+| --- | --- |
+| Slack | the Slack connector on claude.ai (Settings, Connectors) or any Slack MCP server with `slack_search_public_and_private` |
+| Linear | a server with `linear` in its name that has `list_issues` (the claude.ai connector or the Linear MCP server) |
+| Jira | the Atlassian connector on claude.ai or the Atlassian MCP server (`searchJiraIssuesUsingJql`) |
+| Pull requests | the GitHub CLI signed in (`gh auth status`). Your own PRs come from the repo of the folder you start Claude Code in; review requests are searched across GitHub. |
 
-If your Slack or Linear server has a different name in `/mcp`, change `SLACK` or `LINEAR` at the top of `hooks/register.tsx`.
+Servers are found by their tools, not their names, so whatever yours is called in `/mcp` works. A source that is connected but fails is named once at the foot of the pane, and the rest keep working. Watched Slack channels start empty: add yours from the pane. DMs always count.
+
+Adding a source is one entry in `MCP_SOURCES` (`hooks/parse.ts`) and a loader in `hooks/register.tsx`.
 
 ## Make it yours
 

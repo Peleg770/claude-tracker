@@ -1,7 +1,7 @@
 {
   "name": "tracker",
   "version": "0.1.0",
-  "description": "A pane of everything waiting on you: Slack DMs, mentions and threads, open PRs, Linear issues and idle Claude sessions",
+  "description": "A pane of everything waiting on you, from whatever you have connected: Slack, PRs, Linear, Jira and idle Claude sessions",
   "author": { "name": "Peleg770", "url": "https://github.com/Peleg770" },
   "homepage": "https://github.com/Peleg770/claude-tracker",
   "license": "MIT",
