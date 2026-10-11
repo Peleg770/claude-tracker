@@ -1,4 +1,4 @@
-export type TrackerSource = 'slack' | 'pr' | 'linear' | 'session'
+export type TrackerSource = 'slack' | 'pr' | 'linear' | 'jira' | 'session'
 
 export type TrackerFilter = 'all' | 'urgent' | 'done' | TrackerSource
 
@@ -33,6 +33,8 @@ declare module 'claude-code' {
   interface PluginState {
     tracker: {
       items: Record<string, TrackerItem[]>
+      /** The sources found connected at the last refresh: source to the MCP server it reads (`gh` for PRs). */
+      connected: Record<string, string>
       errors: Record<string, string>
       dismissed: Record<string, string>
       refreshedAt: number

@@ -1,4 +1,4 @@
-import type { TrackerDone, TrackerFilter, TrackerItem, TrackerTone } from '../types'
+import type { TrackerDone, TrackerFilter, TrackerItem, TrackerSource, TrackerTone } from '../types'
 
 export type SlackHit = {
   channel: string
@@ -26,6 +26,62 @@ export type PullRequest = {
   statusCheckRollup?: { conclusion?: string; state?: string; status?: string }[]
   repository?: { nameWithOwner?: string }
   author?: { login?: string }
+}
+
+/**
+ * The MCP-backed sources and the tool that gives each away. A server is found by
+ * its tools, not its name, so the claude.ai connector and a local server both count;
+ * `server` narrows a tool name other servers share (GitHub's MCP has `list_issues` too).
+ */
+export const MCP_SOURCES: { source: TrackerSource; tool: string; server?: RegExp }[] = [
+  { source: 'slack', tool: 'slack_search_public_and_private' },
+  { source: 'linear', tool: 'list_issues', server: /linear/i },
+  { source: 'jira', tool: 'searchJiraIssuesUsingJql' },
+]
+
+/**
+ * Which MCP sources are connected, by the server each reads, from the tools the
+ * model can call: an MCP tool is named `mcp__<server>__<tool>`.
+ */
+export function detectSources(tools: readonly { name: string; mcp: boolean }[]): Partial<Record<TrackerSource, string>> {
+  const found: Partial<Record<TrackerSource, string>> = {}
+  for (const { source, tool, server } of MCP_SOURCES) {
+    for (const t of tools) {
+      if (!t.mcp || !t.name.startsWith('mcp__') || !t.name.endsWith(`__${tool}`)) continue
+      const name = t.name.slice('mcp__'.length, -`__${tool}`.length)
+      if (name !== '' && (server === undefined || server.test(name))) {
+        found[source] = name
+        break
+      }
+    }
+  }
+
+  return found
+}
+
+export type JiraIssue = {
+  key: string
+  fields?: {
+    summary?: string
+    status?: { name?: string }
+    priority?: { name?: string }
+    updated?: string
+  }
+}
+
+/** The issues of a Jira search, answered as `{ issues: [...] }` or `{ issues: { nodes: [...] } }`. */
+export function jiraIssues(json: unknown): JiraIssue[] {
+  const issues = (json as { issues?: unknown } | null)?.issues
+  const list = Array.isArray(issues) ? issues : (issues as { nodes?: unknown } | undefined)?.nodes
+  if (!Array.isArray(list)) return []
+
+  return list.filter((issue): issue is JiraIssue => typeof (issue as JiraIssue | null)?.key === 'string')
+}
+
+/** Jira's priority names as a rank, 1 most urgent; unknown names rank with Medium. */
+export function jiraRank(priority: string | undefined): number {
+  const RANKS: Record<string, number> = { blocker: 1, highest: 1, critical: 1, high: 2, medium: 3, low: 4, lowest: 5, trivial: 5 }
+  return RANKS[(priority ?? '').toLowerCase()] ?? 3
 }
 
 /** The JSON a text-returning MCP tool answers, from its content blocks. */
@@ -147,6 +203,7 @@ export const TAB_ICONS: Record<TrackerFilter, string> = {
   slack: '💬',
   pr: '🔀',
   linear: '📋',
+  jira: '🎫',
   session: '🤖',
 }
 
