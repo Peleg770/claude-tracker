@@ -1,6 +1,6 @@
 {
   "name": "tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A pane of everything waiting on you, from whatever you have connected: Slack, PRs, Linear, Jira and idle Claude sessions",
   "author": { "name": "Peleg770", "url": "https://github.com/Peleg770" },
   "homepage": "https://github.com/Peleg770/claude-tracker",
