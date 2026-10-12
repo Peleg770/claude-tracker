@@ -1,8 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  calendarRows,
   cleanSlack,
   detectSources,
+  gmailRows,
   iconFor,
   jiraIssues,
   jiraRank,
@@ -16,6 +18,7 @@ import {
   prStatus,
   prTone,
   readable,
+  senderName,
   visible,
 } from '../hooks/parse'
 
@@ -209,8 +212,16 @@ test('detectSources finds each source by its tool, whatever the server is called
     { name: 'mcp__github__list_issues', mcp: true },
     { name: 'mcp__linear-server__list_issues', mcp: true },
     { name: 'mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql', mcp: true },
+    { name: 'mcp__claude_ai_Gmail__search_threads', mcp: true },
+    { name: 'mcp__claude_ai_Google_Calendar__list_events', mcp: true },
   ])
-  expect(found).toEqual({ slack: 'claude_ai_Slack', linear: 'linear-server', jira: 'claude_ai_Atlassian' })
+  expect(found).toEqual({
+    slack: 'claude_ai_Slack',
+    linear: 'linear-server',
+    jira: 'claude_ai_Atlassian',
+    gmail: 'claude_ai_Gmail',
+    calendar: 'claude_ai_Google_Calendar',
+  })
 })
 
 test('detectSources leaves out what is not connected', () => {
@@ -229,4 +240,54 @@ test('jiraRank orders priority names, unknown as Medium', () => {
   expect(jiraRank('high')).toBe(2)
   expect(jiraRank('P3-ish')).toBe(3)
   expect(jiraRank(undefined)).toBe(3)
+})
+
+test('senderName reads a display name, else the address', () => {
+  expect(senderName('"Dana Levi" <dana@example.com>')).toBe('Dana Levi')
+  expect(senderName('Dana Levi <dana@example.com>')).toBe('Dana Levi')
+  expect(senderName('dana@example.com')).toBe('dana@example.com')
+})
+
+test('gmailRows makes one row per thread, keyed by its newest message', () => {
+  const rows = gmailRows({
+    threads: [
+      {
+        id: 't1',
+        messages: [
+          { id: 'm1', subject: 'Design review', sender: 'Dana <dana@example.com>', date: '2026-10-10' },
+          { id: 'm2', sender: 'Noa <noa@example.com>', date: '2026-10-11', snippet: 'any update?' },
+        ],
+      },
+      { id: 't2', messages: [] },
+    ],
+  })
+  expect(rows.length).toBe(1)
+  expect(rows[0]!.title).toBe('Design review')
+  expect(rows[0]!.detail).toBe('from Noa')
+  expect(rows[0]!.stamp).toBe('m2')
+  expect(rows[0]!.url).toBe('https://mail.google.com/mail/u/0/#inbox/t1')
+  expect(gmailRows({})).toEqual([])
+})
+
+test('calendarRows keeps unanswered invites and accepted meetings starting soon', () => {
+  const now = Date.parse('2026-10-12T09:00:00Z')
+  const at = (minutes: number) => new Date(now + minutes * 60000).toISOString()
+  const rows = calendarRows(
+    {
+      events: [
+        { id: 'invite', summary: 'Crit', start: { dateTime: at(60 * 24) }, attendees: [{ self: true, responseStatus: 'needsAction' }] },
+        { id: 'soon', summary: 'Standup', start: { dateTime: at(20) }, attendees: [{ self: true, responseStatus: 'accepted' }] },
+        { id: 'later', summary: 'Lunch', start: { dateTime: at(300) }, attendees: [{ self: true, responseStatus: 'accepted' }] },
+        { id: 'declined', summary: 'Sync', start: { dateTime: at(10) }, attendees: [{ self: true, responseStatus: 'declined' }] },
+        { id: 'gone', status: 'cancelled', summary: 'Old', start: { dateTime: at(10) } },
+        { id: 'allday', summary: 'Holiday', start: { date: '2026-10-13' } },
+      ],
+    },
+    now,
+    60 * 60 * 1000,
+  )
+  expect(rows.map(r => r.id)).toEqual(['calendar:invite', 'calendar:soon'])
+  expect(rows[1]!.status).toBe('starting soon')
+  expect(rows[1]!.at > rows[0]!.at).toBe(true)
+  expect(rows[0]!.when).toBe(0)
 })
