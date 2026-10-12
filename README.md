@@ -35,26 +35,34 @@ Every row has four actions:
 
 There is also a search box, `r` to refresh, and a channel editor for the Slack channels you watch.
 
-Slack, PRs and Linear refresh every 5 minutes, sessions every 20 seconds. On a wide terminal (144 columns or more) the pane opens by itself when a session starts; `/tracker` opens it anytime and `/tracker refresh` forces a refresh.
+Connected sources refresh every 5 minutes, sessions every 20 seconds. On a wide terminal (144 columns or more) the pane opens by itself when a session starts; `/tracker` opens it anytime and `/tracker refresh` forces a refresh.
 
-## What it needs
+## Supported sources
 
-Everything is about whoever runs it: your Slack user, `gh` as you, Linear issues assigned to you, your own `~/.claude` folder. Nothing is sent anywhere except the services you already connected.
-
-Nothing to configure. On every refresh the tracker looks at the MCP tools you have connected and reads only the sources it finds; the rest never appear, not even as an empty section. Connect one later and it shows up on the next refresh.
+Nothing to configure. On every refresh the tracker looks at the MCP servers you have connected (claude.ai Settings, Connectors, or `/mcp`) and reads only the ones it knows; the rest never appear, not even as an empty section. Connect one later and it shows up on the next refresh.
 
 | Source | Found when |
 | --- | --- |
-| Slack | the Slack connector on claude.ai (Settings, Connectors) or any Slack MCP server with `slack_search_public_and_private` |
-| Linear | a server with `linear` in its name that has `list_issues` (the claude.ai connector or the Linear MCP server) |
-| Jira | the Atlassian connector on claude.ai or the Atlassian MCP server (`searchJiraIssuesUsingJql`) |
-| Gmail | the Gmail connector or Google's Gmail MCP server (`search_threads` on a server with `gmail` in its name) |
-| Calendar | the Google Calendar connector or Google's Calendar MCP server (`list_events` on a server with `calendar` in its name) |
-| Pull requests | the GitHub CLI signed in (`gh auth status`). Your own PRs come from the repo of the folder you start Claude Code in; review requests are searched across GitHub. |
+| 💬 Slack | the Slack connector on claude.ai or any Slack MCP server with `slack_search_public_and_private` |
+| 📋 Linear | the Linear connector or the Linear MCP server (`list_issues` on a server with `linear` in its name) |
+| 🎫 Jira | the Atlassian connector or the Atlassian MCP server (`searchJiraIssuesUsingJql`) |
+| 📧 Gmail | the Gmail connector or Google's Gmail MCP server (`search_threads` on a server with `gmail` in its name) |
+| 📅 Google Calendar | the Google Calendar connector or Google's Calendar MCP server (`list_events` on a server with `calendar` in its name) |
+| 🔀 GitHub pull requests | the GitHub CLI signed in (`gh auth status`), not an MCP server. Your own PRs come from the repo of the folder you start Claude Code in; review requests are searched across GitHub. |
+| 🤖 Claude sessions | always on: read from your own `~/.claude` folder |
 
 Servers are found by their tools, not their names, so whatever yours is called in `/mcp` works. A source that is connected but fails is named once at the foot of the pane, and the rest keep working. Watched Slack channels start empty: add yours from the pane. DMs always count.
 
-Adding a source is one entry in `MCP_SOURCES` (`hooks/parse.ts`) and a loader in `hooks/register.tsx`.
+Everything is about whoever runs it: your Slack user, `gh` as you, issues assigned to you. Nothing is sent anywhere except the services you already connected.
+
+## Add any MCP you use
+
+The list above is what ships, not a limit. Any MCP server can become a source: Asana, GitLab, Notion, Sentry, your company's internal one. Each source is two small pieces:
+
+1. an entry in `MCP_SOURCES` (`hooks/parse.ts`): the tool that tells the tracker the server is connected
+2. a loader in `hooks/register.tsx`: which tool to call, with what arguments ("assigned to me", "not done"), and how each result becomes a row
+
+The easiest way: connect the server, set up your own copy (below), and ask Claude in that folder, for example *"Add Asana to the tracker: my incomplete tasks, due soonest first."* Claude can read the server's real tools from your session and write the loader against them. Pull requests for new sources are welcome.
 
 ## Make it yours
 
@@ -68,7 +76,7 @@ claude plugin install tracker@claude-tracker --scope user
 
 Claude Code then reads the mod straight from that folder: edit it (or ask Claude to) and run `/reload-plugins`. The knobs at the top of `hooks/register.tsx`:
 
-- `REMOTE_EVERY_MS`: how often Slack, PRs and Linear refresh (5 minutes)
+- `REMOTE_EVERY_MS`: how often connected sources refresh (5 minutes)
 - `SESSIONS_EVERY_MS`: how often idle sessions are checked (20 seconds)
 - `SLACK_DAYS`: how far back Slack is searched (7 days)
 - `SHOWN_PER_SECTION`: rows per section before "show more" (5)
