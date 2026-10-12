@@ -1,4 +1,4 @@
-export type TrackerSource = 'slack' | 'pr' | 'linear' | 'jira' | 'session'
+export type TrackerSource = 'slack' | 'pr' | 'linear' | 'jira' | 'gmail' | 'calendar' | 'session'
 
 export type TrackerFilter = 'all' | 'urgent' | 'done' | TrackerSource
 

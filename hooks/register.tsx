@@ -4,7 +4,9 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { TrackerDone, TrackerFilter, TrackerItem, TrackerSource, TrackerTone } from '../types'
 import {
   ago,
+  calendarRows,
   detectSources,
+  gmailRows,
   iconFor,
   jiraIssues,
   jiraRank,
@@ -29,6 +31,11 @@ const PANE = 'tracker'
 const REMOTE_EVERY_MS = 5 * 60 * 1000
 const SESSIONS_EVERY_MS = 20 * 1000
 const SLACK_DAYS = 7
+// Unread mail this recent counts; older unread is an archive, not a queue.
+const GMAIL_DAYS = 7
+// Invites are looked for this far ahead; a meeting this close is "starting soon".
+const CALENDAR_DAYS = 14
+const SOON_MS = 60 * 60 * 1000
 const THREADS_CHECKED = 12
 const SHOWN_PER_SECTION = 5
 // From this many columns the cards sit two to a row: each half then still fits
@@ -41,6 +48,8 @@ const SECTIONS: { source: TrackerSource; title: string }[] = [
   { source: 'slack', title: 'Slack' },
   { source: 'pr', title: 'Pull requests' },
   { source: 'linear', title: 'Linear' },
+  { source: 'calendar', title: 'Calendar' },
+  { source: 'gmail', title: 'Gmail' },
   { source: 'jira', title: 'Jira' },
   { source: 'session', title: 'Claude sessions' },
 ]
@@ -164,6 +173,31 @@ async function loadJira($: $, server: string): Promise<TrackerItem[]> {
   )
 
   return perSite.flat()
+}
+
+async function loadGmail($: $, server: string): Promise<TrackerItem[]> {
+  const result = await $.mcp.call(server, 'search_threads', {
+    // Primary inbox only: promotions, social and the like do not wait on anyone.
+    query: `in:inbox is:unread newer_than:${GMAIL_DAYS}d category:primary`,
+    pageSize: 20,
+  })
+  if (result.isError) throw new Error('Gmail did not answer')
+
+  return gmailRows(mcpJson(result.content))
+}
+
+async function loadCalendar($: $, server: string): Promise<TrackerItem[]> {
+  const now = Date.now()
+  const result = await $.mcp.call(server, 'list_events', {
+    startTime: new Date(now).toISOString(),
+    endTime: new Date(now + CALENDAR_DAYS * 864e5).toISOString(),
+    orderBy: 'startTime',
+    pageSize: 100,
+    eventType: ['DEFAULT'],
+  })
+  if (result.isError) throw new Error('Calendar did not answer')
+
+  return calendarRows(mcpJson(result.content), now, SOON_MS)
 }
 
 /** Whether `gh` is installed and signed in; PRs come from it, not from an MCP server. */
@@ -453,6 +487,8 @@ async function refreshRemote($: $) {
       pr: () => loadPrs($),
       linear: server => loadLinear($, server),
       jira: server => loadJira($, server),
+      gmail: server => loadGmail($, server),
+      calendar: server => loadCalendar($, server),
     }
     await Promise.all([
       ...Object.entries(found).map(([source, server]) =>
@@ -523,6 +559,8 @@ const TABS: { filter: TrackerFilter; title: string }[] = [
   { filter: 'slack', title: 'Slack' },
   { filter: 'pr', title: 'PRs' },
   { filter: 'linear', title: 'Linear' },
+  { filter: 'calendar', title: 'Calendar' },
+  { filter: 'gmail', title: 'Gmail' },
   { filter: 'jira', title: 'Jira' },
   { filter: 'session', title: 'Sessions' },
   { filter: 'done', title: 'Done' },
@@ -599,6 +637,8 @@ export const register: Register = on => {
       pr: 0,
       linear: 0,
       jira: 0,
+      gmail: 0,
+      calendar: 0,
       session: 0,
     }
     for (const item of pool) counts[item.source] += 1

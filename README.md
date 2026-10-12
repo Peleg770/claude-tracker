@@ -21,6 +21,8 @@ Answer `y` to add the marketplace, pick the user scope, and type `/tracker`.
 | 💬 **Slack** | DMs where the last message is someone else's, mentions of you in the channels you watch, and threads you posted in where someone replied after you. Bots are skipped. |
 | 🔀 **Pull requests** | Your open PRs and where they stand (checks failing, changes requested, draft, checks running, approved and ready to merge, waiting for review), plus PRs where your review is requested. |
 | 📋 **Linear** | Issues assigned to you that are started or not yet started, urgent and high priority first. |
+| 📧 **Gmail** | Unread threads in your primary inbox from the last 7 days. |
+| 📅 **Calendar** | Invites you have not answered in the next 14 days, and meetings starting within the hour. |
 | 🎫 **Jira** | Issues assigned to you that are not done, across every Atlassian site you can reach, highest priority first. |
 | 🤖 **Claude sessions** | Your other Claude Code sessions that went idle and are waiting for you, with their last prompt. |
 
@@ -46,6 +48,8 @@ Nothing to configure. On every refresh the tracker looks at the MCP tools you ha
 | Slack | the Slack connector on claude.ai (Settings, Connectors) or any Slack MCP server with `slack_search_public_and_private` |
 | Linear | a server with `linear` in its name that has `list_issues` (the claude.ai connector or the Linear MCP server) |
 | Jira | the Atlassian connector on claude.ai or the Atlassian MCP server (`searchJiraIssuesUsingJql`) |
+| Gmail | the Gmail connector or Google's Gmail MCP server (`search_threads` on a server with `gmail` in its name) |
+| Calendar | the Google Calendar connector or Google's Calendar MCP server (`list_events` on a server with `calendar` in its name) |
 | Pull requests | the GitHub CLI signed in (`gh auth status`). Your own PRs come from the repo of the folder you start Claude Code in; review requests are searched across GitHub. |
 
 Servers are found by their tools, not their names, so whatever yours is called in `/mcp` works. A source that is connected but fails is named once at the foot of the pane, and the rest keep working. Watched Slack channels start empty: add yours from the pane. DMs always count.

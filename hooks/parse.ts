@@ -37,6 +37,8 @@ export const MCP_SOURCES: { source: TrackerSource; tool: string; server?: RegExp
   { source: 'slack', tool: 'slack_search_public_and_private' },
   { source: 'linear', tool: 'list_issues', server: /linear/i },
   { source: 'jira', tool: 'searchJiraIssuesUsingJql' },
+  { source: 'gmail', tool: 'search_threads', server: /gmail/i },
+  { source: 'calendar', tool: 'list_events', server: /calendar/i },
 ]
 
 /**
@@ -82,6 +84,108 @@ export function jiraIssues(json: unknown): JiraIssue[] {
 export function jiraRank(priority: string | undefined): number {
   const RANKS: Record<string, number> = { blocker: 1, highest: 1, critical: 1, high: 2, medium: 3, low: 4, lowest: 5, trivial: 5 }
   return RANKS[(priority ?? '').toLowerCase()] ?? 3
+}
+
+type GmailThread = {
+  id: string
+  messages?: { id?: string; subject?: string; sender?: string; date?: string; snippet?: string }[]
+}
+
+/** Gmail's `"Name" <a@b.c>` or bare address as the name a person reads. */
+export function senderName(sender: string): string {
+  const named = sender.match(/^\s*"?([^"<]+?)"?\s*</)?.[1]
+  return (named ?? sender.replace(/[<>]/g, '')).trim()
+}
+
+/** Unread inbox threads from a `search_threads` answer, one row each, keyed by its newest message. */
+export function gmailRows(json: unknown): TrackerItem[] {
+  const threads = (json as { threads?: GmailThread[] } | null)?.threads
+  if (!Array.isArray(threads)) return []
+
+  return threads.flatMap(thread => {
+    const messages = thread.messages ?? []
+    const last = messages.at(-1)
+    if (typeof thread.id !== 'string' || last === undefined) return []
+    const subject = messages.find(m => m.subject)?.subject ?? ''
+    const from = senderName(last.sender ?? '')
+    const when = Date.parse(last.date ?? '') || 0
+
+    return [
+      {
+        id: `gmail:${thread.id}`,
+        source: 'gmail' as const,
+        title: subject || readable(last.snippet ?? '') || '(no subject)',
+        status: 'unread email',
+        tone: 'claude' as const,
+        detail: from ? `from ${from}` : '',
+        url: `https://mail.google.com/mail/u/0/#inbox/${thread.id}`,
+        prompt: `Help me reply to the email from ${from || 'this sender'}${subject ? ` about "${subject}"` : ''}. Read the thread first.`,
+        stamp: last.id ?? String(when),
+        at: when,
+        when,
+      },
+    ]
+  })
+}
+
+type CalendarEvent = {
+  id?: string
+  status?: string
+  summary?: string
+  htmlLink?: string
+  start?: { date?: string; dateTime?: string }
+  attendees?: { self?: boolean; responseStatus?: string }[]
+  organizer?: { displayName?: string; email?: string; self?: boolean }
+}
+
+/** "14:05" in the runtime's local time. */
+export function clockTime(at: number): string {
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * What on the calendar waits on me: invites I have not answered, and meetings I
+ * accepted or organise that start within `soonMs`. Cancelled and all-day events are left out.
+ */
+export function calendarRows(json: unknown, now: number, soonMs: number): TrackerItem[] {
+  const events = (json as { events?: CalendarEvent[] } | null)?.events
+  if (!Array.isArray(events)) return []
+
+  return events.flatMap(event => {
+    const start = Date.parse(event.start?.dateTime ?? '')
+    if (typeof event.id !== 'string' || event.status === 'cancelled' || Number.isNaN(start) || start < now) return []
+    const mine = event.attendees?.find(a => a.self)
+    const unanswered = mine?.responseStatus === 'needsAction'
+    const soon = start - now <= soonMs && (mine === undefined || mine.responseStatus === 'accepted' || event.organizer?.self === true)
+    if (!unanswered && !soon) return []
+    const title = event.summary || '(no title)'
+    const host = event.organizer?.self ? '' : event.organizer?.displayName || event.organizer?.email || ''
+    const minutes = Math.round((start - now) / 60000)
+    const day = new Date(start).toDateString() === new Date(now).toDateString() ? '' : `${new Date(start).toDateString().slice(0, 10)} `
+
+    return [
+      {
+        id: `calendar:${event.id}`,
+        source: 'calendar' as const,
+        title,
+        status: soon ? 'starting soon' : 'invite awaiting reply',
+        tone: soon ? ('warning' as const) : ('claude' as const),
+        detail: [soon ? `in ${minutes}m, ${clockTime(start)}` : `${day}${clockTime(start)}`, host ? `from ${host}` : '']
+          .filter(Boolean)
+          .join(' · '),
+        url: event.htmlLink,
+        prompt: soon
+          ? `Help me prepare for "${title}" at ${clockTime(start)}: what is it about and what should I bring?`
+          : `Help me decide whether to accept "${title}" on ${day}${clockTime(start)}${host ? ` from ${host}` : ''}.`,
+        stamp: `${soon ? 'soon' : 'invite'}|${event.start?.dateTime}`,
+        // Soonest first: a meeting about to start outranks an invite.
+        at: (soon ? 2e12 : 1e12) - start / 1000,
+        // Future: no age is shown.
+        when: 0,
+      },
+    ]
+  })
 }
 
 /** The JSON a text-returning MCP tool answers, from its content blocks. */
@@ -204,6 +308,8 @@ export const TAB_ICONS: Record<TrackerFilter, string> = {
   pr: '🔀',
   linear: '📋',
   jira: '🎫',
+  gmail: '📧',
+  calendar: '📅',
   session: '🤖',
 }
 
@@ -221,6 +327,9 @@ const STATUS_ICONS: Record<string, string> = {
   'checks running': '⏳',
   draft: '🚧',
   'waiting for review': '💤',
+  'unread email': '📧',
+  'invite awaiting reply': '📨',
+  'starting soon': '⏰',
 }
 
 /** The emoji a row starts with: what happened, else where it came from. */
